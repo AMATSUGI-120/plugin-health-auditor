@@ -59,6 +59,10 @@ Add configurable rule packs, richer manifest adapters, policy baselines, and rev
 
 Developer Tools
 
+# Project Link
+
+https://github.com/AMATSUGI-120/plugin-health-auditor
+
 # Installation and testing
 
 From the project checkout:

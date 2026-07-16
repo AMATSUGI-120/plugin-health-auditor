@@ -87,6 +87,16 @@ Reports include `estimatedTokens`, calculated as characters divided by four. Thi
 
 Codex orchestrates the read-only workflow and preserves the evidence contract. The deterministic scanner and MCP server supply facts and evidence packets; neither independently invokes or pins a model. When a host Codex task is explicitly running GPT-5.6, the bundled skill instructs that host model to label conclusions as `GPT-5.6 inference`, cite supporting rule IDs or files, assign confidence, and state a falsification condition. Codex presents both layers separately for human review.
 
+For the Build Week implementation, Codex accelerated requirement decomposition, bounded scanner implementation, synthetic fixture and integration-test creation, documentation, release packaging, and cross-surface verification. GPT-5.6 Sol was explicitly used as the managing security and release reviewer; bounded engineering and documentation passes were delegated to GPT-5.6 Terra and Luna, then rechecked by Sol before release. The review preserved inspectable artifacts—commits, tests, fixture output, and the [semantic-review example](docs/SEMANTIC_REVIEW_EXAMPLE.md)—rather than treating a model conclusion as proof.
+
+Key product decisions made during that workflow were:
+
+- Keep target content inert and local: inspect files without importing, executing, repairing, or transmitting them.
+- Make deterministic evidence the contract and keep GPT-5.6 semantic inference as a separately labeled optional layer.
+- Use one audit engine for CLI, HTTP, and MCP so judges can compare identical findings across surfaces.
+- Ship zero package dependencies plus synthetic fixtures so the project can be tested immediately after checkout.
+- Preserve stable `PHA-` rule IDs, redacted line evidence, bounded scanning, and explicit limitations instead of claiming a security certification.
+
 ## Judge testing path
 
 From the repository checkout, use the existing unsafe fixture directly; do not rebuild it:

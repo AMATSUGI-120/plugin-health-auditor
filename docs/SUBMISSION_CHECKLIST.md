@@ -14,14 +14,15 @@ Last locally verified: 2026-07-17 JST.
 - [x] English Devpost copy and a 2:30 English voiceover script are drafted.
 - [x] Gallery-ready screenshot exists at `assets/plugin-health-auditor-results.jpg`.
 - [x] MIT license and judge testing instructions are present.
+- [x] Public repository: https://github.com/AMATSUGI-120/plugin-health-auditor
+- [x] Devpost title, tagline, description, Built With, repository link, testing instructions, and project image are populated.
 
 ## External actions required
 
-- [ ] Publish a public GitHub repository and replace this item with its URL.
 - [ ] Record the 2:30 demo with English audio using `docs/DEMO_SCRIPT.md`.
 - [ ] Upload the video publicly to YouTube and replace this item with its URL.
 - [ ] Run `/feedback` in the submission task and record the resulting session ID.
-- [ ] Add the repository URL, YouTube URL, session ID, and testing instructions to the Devpost draft.
+- [ ] Add the YouTube URL and session ID to the Devpost project.
 - [ ] Confirm the Developer Tools category and submit before the Devpost deadline.
 
 ## Recommended final sequence
