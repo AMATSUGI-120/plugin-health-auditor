@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Plugin Health Auditor</title>
+  <style>
+    :root { color-scheme: dark; --bg:#090b10; --panel:#11151d; --line:#263041; --text:#eef2f7; --muted:#9aa8ba; --green:#69e6ad; --red:#ff7b89; --amber:#ffc66d; --blue:#7cb8ff; }
+    * { box-sizing:border-box; }
+    body { margin:0; font:15px/1.5 ui-sans-serif,system-ui,-apple-system,sans-serif; background:radial-gradient(circle at 18% 0%,#142137 0,transparent 32rem),var(--bg); color:var(--text); }
+    main { width:min(1120px,calc(100% - 32px)); margin:0 auto; padding:64px 0 96px; }
+    header { display:grid; gap:14px; margin-bottom:28px; }
+    .eyebrow { color:var(--green); font-size:12px; font-weight:800; letter-spacing:.15em; text-transform:uppercase; }
+    h1 { margin:0; max-width:850px; font-size:clamp(38px,7vw,74px); line-height:.98; letter-spacing:-.055em; }
+    header p { max-width:720px; margin:0; color:var(--muted); font-size:17px; }
+    .panel { border:1px solid var(--line); border-radius:18px; background:color-mix(in srgb,var(--panel) 92%,transparent); box-shadow:0 24px 80px #0008; }
+    form { display:flex; gap:10px; padding:14px; }
+    input { min-width:0; flex:1; border:1px solid var(--line); border-radius:11px; padding:13px 14px; background:#090c12; color:var(--text); font:inherit; }
+    input:focus { outline:2px solid #69e6ad55; border-color:var(--green); }
+    button { border:0; border-radius:11px; padding:0 20px; background:var(--green); color:#062116; font:800 14px/1 inherit; cursor:pointer; }
+    button:disabled { opacity:.55; cursor:wait; }
+    #status { min-height:24px; margin:14px 2px; color:var(--muted); }
+    .summary { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin:22px 0; }
+    .metric { padding:18px; }
+    .metric span { display:block; color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.08em; }
+    .metric strong { display:block; margin-top:7px; font-size:27px; }
+    .findings { display:grid; gap:12px; }
+    article { padding:18px; }
+    .finding-head { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+    .badge { padding:4px 8px; border-radius:999px; font-size:11px; font-weight:900; letter-spacing:.06em; text-transform:uppercase; background:#293244; }
+    .critical,.high { color:var(--red); } .medium { color:var(--amber); } .low { color:var(--blue); }
+    article h2 { margin:9px 0 5px; font-size:18px; }
+    .location { color:var(--muted); font:12px ui-monospace,SFMono-Regular,Menlo,monospace; }
+    code { display:block; overflow-wrap:anywhere; margin-top:12px; padding:11px 12px; border-radius:9px; background:#090c12; color:#c8d5e5; font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .remediation { margin:12px 0 0; color:var(--muted); }
+    .empty { padding:32px; text-align:center; color:var(--green); }
+    [hidden] { display:none !important; }
+    @media (max-width:720px) { main{padding-top:36px}.summary{grid-template-columns:1fr 1fr}form{flex-direction:column}button{min-height:46px} }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="eyebrow">Plugin Health Auditor · Evidence before inference</div>
+      <h1>Know what your agent stack loads, triggers, and can do.</h1>
+      <p>A read-only health check for Codex plugins, Agent Skills, hooks, scripts, and MCP configuration. Static estimates remain estimates. Every finding points back to evidence.</p>
+    </header>
+    <section class="panel">
+      <form id="audit-form">
+        <input id="path" name="path" value="." aria-label="Local path to audit" autocomplete="off" spellcheck="false">
+        <button type="submit">Run audit</button>
+      </form>
+    </section>
+    <div id="status">Enter a local directory path. Target code is read, never executed.</div>
+    <section id="results" hidden>
+      <div class="summary" id="summary"></div>
+      <div class="findings" id="findings"></div>
+    </section>
+  </main>
+  <script>
+    const form = document.querySelector('#audit-form');
+    const button = form.querySelector('button');
+    const status = document.querySelector('#status');
+    const results = document.querySelector('#results');
+    const summary = document.querySelector('#summary');
+    const findings = document.querySelector('#findings');
+    const escapeHtml = (value) => String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault(); button.disabled = true; results.hidden = true; status.textContent = 'Scanning without executing target code…';
+      try {
+        const requestedPath = document.querySelector('#path').value.trim();
+        const response = await fetch('/api/audit', { method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify({ path:requestedPath }) });
+        const report = await response.json();
+        if (!response.ok) throw new Error(report.error || 'Audit failed');
+        const counts = report.summary?.bySeverity || {};
+        summary.innerHTML = [
+          ['Risk score', report.summary?.score ?? 0],
+          ['Findings', report.findings?.length ?? 0],
+          ['Files read', report.inventory?.scannedFiles ?? 0],
+          ['Est. context tokens', report.inventory?.estimatedTokens ?? 0]
+        ].map(([label,value]) => `<div class="panel metric"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join('');
+        findings.innerHTML = report.findings?.length ? report.findings.map(f => `<article class="panel"><div class="finding-head"><span class="badge ${escapeHtml(f.severity)}">${escapeHtml(f.severity)}</span><span class="badge">${escapeHtml(f.ruleId)}</span><span class="badge">${escapeHtml(f.category)}</span></div><h2>${escapeHtml(f.summary)}</h2><div class="location">${escapeHtml(f.file)}${f.line ? ':' + escapeHtml(f.line) : ''}</div><code>${escapeHtml(f.evidence)}</code><p class="remediation">${escapeHtml(f.remediation)}</p></article>`).join('') : '<div class="panel empty">No deterministic findings at the configured thresholds.</div>';
+        status.textContent = `Completed: ${requestedPath || 'target'} · ${counts.critical || 0} critical · ${counts.high || 0} high`;
+        results.hidden = false;
+      } catch (error) { status.textContent = `Error: ${error.message}`; }
+      finally { button.disabled = false; }
+    });
+  </script>
+</body>
+</html>

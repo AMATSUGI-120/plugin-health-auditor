@@ -1,0 +1,6 @@
+interface:
+  display_name: "Audit Plugin Health"
+  short_description: "Audit agent skills and plugins for risk"
+  default_prompt: "Use $audit-plugin-health to scan this plugin or skill stack and explain the evidence-backed risks."
+policy:
+  allow_implicit_invocation: false

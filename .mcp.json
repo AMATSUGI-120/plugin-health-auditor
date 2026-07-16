@@ -1,0 +1,7 @@
+{
+  "plugin-health-auditor": {
+    "command": "node",
+    "args": ["./mcp/server.mjs"],
+    "cwd": "."
+  }
+}

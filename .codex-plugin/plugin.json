@@ -1,0 +1,23 @@
+{
+  "name": "plugin-health-auditor",
+  "version": "0.1.0",
+  "description": "Evidence-backed health checks for Codex plugins, agent skills, hooks, scripts, and MCP configuration.",
+  "author": {
+    "name": "Social Hub"
+  },
+  "license": "MIT",
+  "keywords": ["security", "skills", "plugins", "mcp", "developer-tools"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Plugin Health Auditor",
+    "shortDescription": "Audit agent plugins before they audit your budget.",
+    "longDescription": "Scan Codex plugins and agent skills for always-on triggers, context overhead, invocation amplification, risky scripts, hooks, MCP permissions, secrets, and configuration problems. Every deterministic finding includes file and line evidence; the bundled skill can guide a separately labeled semantic review by an explicitly configured host Codex task.",
+    "developerName": "Social Hub",
+    "category": "Developer Tools",
+    "capabilities": ["Read"],
+    "defaultPrompt": [
+      "Audit this plugin and explain its highest-priority evidence-backed risks."
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}

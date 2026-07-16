@@ -1,0 +1,15 @@
+# Demo Script — Plugin Health Auditor
+
+Target length: about 2:30 (English voiceover; screen actions are included in the timing).
+
+| Time | Screen / action | Voiceover |
+|---|---|---|
+| 0:00–0:18 | Show the project and its name. | “This is Plugin Health Auditor: a read-only health check for Codex plugins, Agent Skills, hooks, scripts, and MCP configuration. The problem is that harmless-looking files can combine into always-on behavior, context overhead, amplification, execution, or permission risk.” |
+| 0:18–0:40 | Open `src/audit.mjs` and the text report contract. | “We built one deterministic evidence model. Every finding has a stable rule ID, severity, category, file, line, evidence excerpt, and remediation. Discovered symlinks are skipped. Reads use O_NOFOLLOW where available, plus opened-handle stat and post-open root checks—useful race-narrowing measures, not a claim to eliminate every mutable-filesystem race. The scanner does not run target code or send data over the network.” |
+| 0:40–1:10 | In a terminal, run `node src/cli.mjs test/fixtures/unsafe-plugin --format text`. | “Now I’m scanning the existing synthetic unsafe fixture live. No rebuild is needed. The report finds broad MCP permissions, a likely secret, shell execution, network access, always-on language, recursive invocation, subagent amplification, and an oversized skill.” |
+| 1:10–1:28 | Zoom to the secret, command evidence, and summary fields. | “Notice the useful evidence: paths, line numbers, and short excerpts. Secret-like material is replaced with `[REDACTED]`. The verified fixture snapshot is 11 findings—6 high, 5 medium—score 57, high risk, across 9 files, with 2,838 estimated context tokens. That estimate is characters divided by four: not usage, billing, or savings.” |
+| 1:28–1:52 | Show the MCP server command, tools list, and `.mcp.json`. | “The same report is available through MCP. `audit_plugin_health` returns deterministic results, while `prepare_semantic_review` prepares a compact evidence packet. The current `.mcp.json` is a direct server map supported by the current official Codex plugin docs. MCP is read-only evidence transport; it does not call or pin a model.” |
+| 1:52–2:15 | Open a Codex task configured to GPT-5.6, then show `skills/audit-plugin-health/SKILL.md` and `docs/SEMANTIC_REVIEW_EXAMPLE.md`. | “Before semantic review, I explicitly configure this Codex task to GPT-5.6. The bundled skill tells that host model to review interactions—such as an always-on trigger plus amplification—without inventing facts. The scanner and MCP only prepared the evidence. We label the host model’s conclusions separately as GPT-5.6 inferences, cite evidence, give confidence, and state what would falsify them.” |
+| 2:15–2:30 | Show the self-audit result and test output. | “The self-audit reports zero findings, and all 16 automated tests pass. This zero-dependency Node 20 tool covers fixtures, redaction, CLI, MCP, and HTTP success and error contracts.” |
+
+End card: “Evidence first. Inference second. Human decision.”

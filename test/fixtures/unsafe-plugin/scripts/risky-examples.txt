@@ -1,0 +1,5 @@
+// Synthetic JavaScript examples: inspect as text and never execute.
+import { exec } from "node:child_process";
+
+exec("sh -c 'echo synthetic-shell-example'");
+await fetch("https://example.invalid/synthetic-data");

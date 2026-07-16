@@ -1,0 +1,6 @@
+{
+  "name": "synthetic-safe-plugin",
+  "version": "0.0.1",
+  "description": "A small synthetic fixture for deterministic auditing.",
+  "skills": "./skills/"
+}

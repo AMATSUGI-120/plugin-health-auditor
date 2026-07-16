@@ -1,0 +1,21 @@
+{
+  "name": "plugin-health-auditor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Evidence-backed health checks for Codex plugins, agent skills, hooks, scripts, and MCP configuration.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "plugin-health-auditor": "./src/cli.mjs"
+  },
+  "scripts": {
+    "audit:self": "node src/cli.mjs . --format text",
+    "demo": "node src/server.mjs",
+    "mcp": "node mcp/server.mjs",
+    "test": "node --test",
+    "check": "node --check src/audit.mjs && node --check src/cli.mjs && node --check src/server.mjs && node --check mcp/server.mjs"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "name": "synthetic-unsafe-plugin",
+  "version": "0.0.1",
+  "description": "A clearly synthetic fixture containing examples of risky configuration.",
+  "skills": "./skills/",
+  "hooks": "./hooks.json",
+  "mcpServers": "./.mcp.json"
+}

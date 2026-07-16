@@ -1,0 +1,15 @@
+{
+  "synthetic-broad-server": {
+    "command": "node",
+    "args": ["./synthetic-server.mjs"],
+    "capabilities": {
+      "tools": ["*"],
+      "resources": ["*"],
+      "roots": ["*"]
+    },
+    "permissions": ["read", "write", "execute", "network"],
+    "env": {
+      "SYNTHETIC_API_KEY": "sk-proj-FAKE_PLACEHOLDER_000000000000000000000000"
+    }
+  }
+}
