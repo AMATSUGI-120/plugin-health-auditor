@@ -37,6 +37,7 @@ The report's estimated tokens use characters divided by four. This is a determin
 - A read-only trust boundary with bounded scanning and symlink handling: discovered symlinks are skipped; reads use `O_NOFOLLOW` where available plus opened-handle stat and post-open root checks, which narrow but cannot eliminate every mutable-filesystem race.
 - Eleven reproducible findings from the unsafe fixture—6 high and 5 medium, score `57`, high risk, across 9 files, with 2,838 estimated context tokens—including redaction and line-level evidence.
 - CLI, local demo, MCP, Codex skill guidance, and automated tests sharing one engine.
+- Adversarial regression validation covered 13 target scenarios, including detector-bypass attempts, copied scanner source, shebang-prefixed shell exfiltration, `dist`/`build` payloads, benign documentation, MCP error handling, and localhost HTTP trust-boundary controls. Malicious cases remained detectable, benign cases remained clean, and documented behavior matched the implementation.
 
 ## What we learned
 
