@@ -89,7 +89,7 @@ function addExfiltrationFinding(findings, relative, text, excludeSelf) {
   if (excludeSelf) return;
   const sensitiveMatches = [...text.matchAll(/\b(?:process\.env\b|(?:fs\.)?readFile(?:Sync)?\s*\()/gi)];
   const networkMatches = [...text.matchAll(/\b(?:fetch|axios(?:\.[A-Za-z]+)?|https?\.(?:request|get)|WebSocket)\s*\(|(?:^|[|;&]\s*|\b(?:command|sudo)\s+)(?:curl|wget)\b/gim)];
-  const shellSensitiveUpload = /(?:^|[|;&]\s*|\b(?:command|sudo)\s+)(?:curl|wget)\b[^\n]*(?:\$\{?[^\s}:]*(?:token|secret|key|env|home)[^\s}:]*\}?|\$\([^\n]*\bcat\b)/i;
+  const shellSensitiveUpload = /(?:^|[|;&]\s*|\b(?:command|sudo)\s+)(?:curl|wget)\b[^\n]*(?:\$\{?[^\s}:]*(?:token|secret|key|env|home)[^\s}:]*\}?|\$\([^\n]*\bcat\b)/im;
   let sensitiveIndex = 0;
   let networkIndex = 0;
   let firstPairIndex = Number.POSITIVE_INFINITY;

