@@ -8,8 +8,12 @@ Last locally verified: 2026-07-17 JST.
 - [x] Deterministic CLI, localhost-only browser demo, and read-only MCP tools share one audit engine.
 - [x] Unsafe judge fixture reports 11 findings: 6 high and 5 medium, score 57, across 9 files, with 2,838 estimated context tokens.
 - [x] Secret-like evidence is redacted.
+- [x] Adversarial hardening covers detector-shaped content, exact scanner-source self-exclusion, exact skipped counts with bounded path samples, and first-match-per-file/rule evidence.
+- [x] Risky supported files in `dist/` and `build/` are scanned; exfiltration requires a nearby network signal and reports high severity with medium confidence.
+- [x] The localhost API validates `Host` and `Origin`, requires JSON audit POSTs, and documents the trusted-local-user selected local audit path.
+- [x] MCP processes bounded JSONL sequentially and hides target-path and unexpected internal error details.
 - [x] Self-audit reports 0 findings.
-- [x] Automated suite passes 16 tests, including CLI, MCP, and HTTP success/error contracts.
+- [x] Automated suite passes exactly 16 top-level tests, including CLI, MCP parse-error/order contracts, and HTTP success/error contracts.
 - [x] GPT-5.6 semantic-review example separates deterministic facts from model inferences.
 - [x] English Devpost copy and a 2:30 English voiceover script are drafted.
 - [x] Gallery-ready screenshot exists at `assets/plugin-health-auditor-results.jpg`.

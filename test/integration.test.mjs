@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { request as httpRequest } from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -37,6 +38,19 @@ test("GET /health returns service status", async (t) => {
 
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { ok: true, service: "plugin-health-auditor" });
+
+  const forbidden = await new Promise((resolveRequest, rejectRequest) => {
+    const request = httpRequest(new URL(baseUrl), { method: "GET", path: "/health", headers: { host: "evil.example" } }, (reply) => {
+      let body = "";
+      reply.setEncoding("utf8");
+      reply.on("data", (chunk) => { body += chunk; });
+      reply.on("end", () => resolveRequest({ status: reply.statusCode, body }));
+    });
+    request.on("error", rejectRequest);
+    request.end();
+  });
+  assert.equal(forbidden.status, 403);
+  assert.deepEqual(JSON.parse(forbidden.body), { error: "Forbidden" });
 });
 
 test("POST /api/audit returns the deterministic unsafe fixture summary", async (t) => {
@@ -55,6 +69,22 @@ test("POST /api/audit returns the deterministic unsafe fixture summary", async (
     riskLevel: "high",
     scoreDescription: "Severity-weighted deterministic finding score; not a security rating or token/billing measure."
   });
+
+  const crossOrigin = await fetch(`${baseUrl}/api/audit`, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: "https://evil.example" },
+    body: JSON.stringify({ path: UNSAFE })
+  });
+  assert.equal(crossOrigin.status, 403);
+  assert.deepEqual(await crossOrigin.json(), { error: "Forbidden" });
+
+  const simpleRequest = await fetch(`${baseUrl}/api/audit`, {
+    method: "POST",
+    headers: { "content-type": "text/plain" },
+    body: JSON.stringify({ path: UNSAFE })
+  });
+  assert.equal(simpleRequest.status, 415);
+  assert.deepEqual(await simpleRequest.json(), { error: "Content-Type must be application/json" });
 });
 
 test("POST /api/audit rejects malformed JSON without parser details", async (t) => {
@@ -150,6 +180,7 @@ test("MCP config is a direct server map and its declared server validates protoc
   send({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
   send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "audit_plugin_health", arguments: { path: SAFE } } });
   sendRaw('{"jsonrpc":');
+  sendRaw(`{"oversized":"${"x".repeat(1_048_576)}"}`);
   send("not a request");
   send({ jsonrpc: "2.0", id: 4, method: "missing/method", params: {} });
   send({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "not_a_tool", arguments: { path: SAFE } } });
@@ -157,11 +188,11 @@ test("MCP config is a direct server map and its declared server validates protoc
   send({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "audit_plugin_health", arguments: { path: join(ROOT, "missing-target") } } });
 
   const deadline = Date.now() + 5_000;
-  while (messages.length < 9 && Date.now() < deadline) {
+  while (messages.length < 10 && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 
-  assert.equal(messages.length, 9);
+  assert.equal(messages.length, 10);
   const byId = new Map(messages.filter((message) => message.id !== null).map((message) => [message.id, message]));
   assert.equal(byId.get(1).result.serverInfo.name, "plugin-health-auditor");
   assert.deepEqual(byId.get(2).result.tools.map((tool) => tool.name), ["audit_plugin_health", "prepare_semantic_review"]);
@@ -172,6 +203,19 @@ test("MCP config is a direct server map and its declared server validates protoc
   assert.equal(byId.get(5).error.code, -32602);
   assert.equal(byId.get(6).error.code, -32602);
   assert.equal(byId.get(7).result.isError, true, "audit failures are tool results, not protocol errors");
-  const nullErrors = messages.filter((message) => message.id === null).map((message) => message.error.code).sort();
-  assert.deepEqual(nullErrors, [-32600, -32700], "valid JSON with an invalid request must not be called a parse error");
+  const failedAuditText = byId.get(7).result.content?.[0]?.text ?? "";
+  assert.equal(failedAuditText, "Audit could not be completed for the requested path.");
+  assert.equal(failedAuditText.includes(join(ROOT, "missing-target")), false);
+  assert.doesNotMatch(failedAuditText, /ENOENT|lstat|realpath|permission denied/i);
+  const nullErrors = messages.filter((message) => message.id === null).map((message) => message.error.code).sort((left, right) => left - right);
+  assert.deepEqual(nullErrors, [-32700, -32700, -32600], "invalid and oversized JSONL messages must be parse errors, while invalid requests remain distinct");
+  const parseError = messages.find((message) => message.id === null && message.error?.code === -32700);
+  assert.ok(parseError);
+  assert.equal(Object.hasOwn(parseError.error, "data"), false);
+  assert.equal(Object.hasOwn(parseError.error, "details"), false);
+  assert.deepEqual(
+    messages.filter((message) => message.id !== null).map((message) => message.id),
+    [1, 2, 3, 4, 5, 6, 7],
+    "responses preserve request order while audit calls complete asynchronously"
+  );
 });

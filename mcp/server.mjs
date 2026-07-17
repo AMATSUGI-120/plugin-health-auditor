@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 
-import readline from "node:readline";
-import { auditPath, formatTextReport } from "../src/audit.mjs";
+import { StringDecoder } from "node:string_decoder";
+import { AuditTargetError, auditPath, formatTextReport } from "../src/audit.mjs";
 
 const SERVER = { name: "plugin-health-auditor", version: "0.1.0" };
 const PROTOCOL_VERSION = "2025-06-18";
+const MAX_JSONL_MESSAGE_BYTES = 1 * 1024 * 1024;
 
 const tools = [
   {
@@ -166,10 +167,8 @@ async function handle(message) {
     try {
       respond(await callTool(params.name, params.arguments));
     } catch (cause) {
-      respond({
-        content: [{ type: "text", text: cause instanceof Error ? cause.message : String(cause) }],
-        isError: true
-      });
+      if (!(cause instanceof AuditTargetError)) throw cause;
+      respond({ content: [{ type: "text", text: "Audit could not be completed for the requested path." }], isError: true });
     }
     return;
   }
@@ -177,20 +176,63 @@ async function handle(message) {
   respondError(-32601, `Method not found: ${method}`);
 }
 
-const input = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
-input.on("line", async (line) => {
+async function processLine(line) {
   if (!line.trim()) return;
+  if (Buffer.byteLength(line, "utf8") > MAX_JSONL_MESSAGE_BYTES) {
+    error(null, -32700, "Parse error");
+    return;
+  }
   let message;
   try {
     message = JSON.parse(line);
-  } catch (cause) {
-    error(null, -32700, "Parse error", cause instanceof Error ? cause.message : String(cause));
+  } catch {
+    error(null, -32700, "Parse error");
     return;
   }
   try {
     await handle(message);
-  } catch (cause) {
+  } catch {
+    if (isPlainObject(message) && !Object.hasOwn(message, "id")) return;
     const id = isPlainObject(message) ? requestId(message) : null;
-    error(id, -32600, "Invalid Request", cause instanceof Error ? cause.message : String(cause));
+    error(id, -32603, "Internal error");
   }
-});
+}
+
+async function processInput(stream) {
+  const decoder = new StringDecoder("utf8");
+  let pending = "";
+  let pendingBytes = 0;
+  let discardingOversizedLine = false;
+
+  async function consume(text) {
+    let offset = 0;
+    while (offset < text.length) {
+      const newline = text.indexOf("\n", offset);
+      const end = newline === -1 ? text.length : newline;
+      const segment = text.slice(offset, end);
+      if (!discardingOversizedLine) {
+        pendingBytes += Buffer.byteLength(segment, "utf8");
+        if (pendingBytes > MAX_JSONL_MESSAGE_BYTES) {
+          pending = "";
+          discardingOversizedLine = true;
+        } else {
+          pending += segment;
+        }
+      }
+      if (newline === -1) return;
+      if (discardingOversizedLine) error(null, -32700, "Parse error");
+      else await processLine(pending.endsWith("\r") ? pending.slice(0, -1) : pending);
+      pending = "";
+      pendingBytes = 0;
+      discardingOversizedLine = false;
+      offset = newline + 1;
+    }
+  }
+
+  for await (const chunk of stream) await consume(decoder.write(chunk));
+  await consume(decoder.end());
+  if (discardingOversizedLine) error(null, -32700, "Parse error");
+  else if (pending) await processLine(pending);
+}
+
+await processInput(process.stdin);

@@ -1,12 +1,16 @@
 import { constants as FS_CONSTANTS } from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const DEFAULTS = Object.freeze({ maxFiles: 2_000, maxFileBytes: 512 * 1024, maxTotalBytes: 10 * 1024 * 1024 });
 const LIMITS = Object.freeze({ maxFiles: 10_000, maxFileBytes: 2 * 1024 * 1024, maxTotalBytes: 50 * 1024 * 1024 });
-const IGNORED_DIRECTORIES = new Set(['.git', '.hg', '.svn', 'node_modules', 'vendor', 'dist', 'build', 'coverage', '.next', 'test']);
+const IGNORED_DIRECTORIES = new Set(['.git', '.hg', '.svn', 'node_modules', 'vendor', 'coverage', '.next', 'test']);
 const TEXT_EXTENSIONS = new Set(['.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.sh', '.bash', '.zsh', '.fish', '.ps1', '.py', '.rb', '.php', '.go', '.rs', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.conf', '.json', '.md', '.txt']);
 const SEVERITY_POINTS = Object.freeze({ info: 0, low: 1, medium: 3, high: 7, critical: 12 });
+const SKIPPED_PATH_LIMIT = 100;
+const SCANNER_MODULE_REAL_PATH = await fsp.realpath(fileURLToPath(import.meta.url));
+const SHELL_EXTENSIONS = new Set(['.sh', '.bash', '.zsh', '.fish']);
 const SECRET_PATTERNS = [
   /\bsk-[A-Za-z0-9_-]{16,}\b/g,
   /\b(?:ghp|github_pat)_[A-Za-z0-9_]{20,}\b/g,
@@ -60,18 +64,51 @@ function finding(ruleId, severity, category, summary, file, line, evidence, reme
   return { ruleId, severity, category, summary, file, line: line || null, evidence: displayEvidence(evidence || ''), remediation, confidence, source: 'deterministic' };
 }
 
-function addPatternFindings(findings, file, text, rules) {
+export class AuditTargetError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'AuditTargetError';
+  }
+}
+
+function addPatternFindings(findings, file, text, rules, excludeSelf = false) {
+  if (excludeSelf) return;
   for (const rule of rules) {
     const match = rule.pattern.exec(text);
     if (!match) continue;
     const evidence = excerptAt(text, match.index);
-    if (/\bid:\s*['"]PHA-[A-Z-]+-\d+['"].*\bpattern\s*:/.test(evidence)) continue;
     findings.push(finding(rule.id, rule.severity, rule.category, rule.summary, file, lineAt(text, match.index), evidence, rule.remediation, rule.confidence));
   }
 }
 
+function isShellLike(file) {
+  return SHELL_EXTENSIONS.has(path.extname(file).toLowerCase());
+}
+
+function addExfiltrationFinding(findings, relative, text, excludeSelf) {
+  if (excludeSelf) return;
+  const sensitiveMatches = [...text.matchAll(/\b(?:process\.env\b|(?:fs\.)?readFile(?:Sync)?\s*\()/gi)];
+  const networkMatches = [...text.matchAll(/\b(?:fetch|axios(?:\.[A-Za-z]+)?|https?\.(?:request|get)|WebSocket)\s*\(|(?:^|[|;&]\s*|\b(?:command|sudo)\s+)(?:curl|wget)\b/gim)];
+  const shellSensitiveUpload = /(?:^|[|;&]\s*|\b(?:command|sudo)\s+)(?:curl|wget)\b[^\n]*(?:\$\{?[^\s}:]*(?:token|secret|key|env|home)[^\s}:]*\}?|\$\([^\n]*\bcat\b)/i;
+  let sensitiveIndex = 0;
+  let networkIndex = 0;
+  let firstPairIndex = Number.POSITIVE_INFINITY;
+  while (sensitiveIndex < sensitiveMatches.length && networkIndex < networkMatches.length) {
+    const sensitive = sensitiveMatches[sensitiveIndex].index;
+    const network = networkMatches[networkIndex].index;
+    if (Math.abs(sensitive - network) <= 280) firstPairIndex = Math.min(firstPairIndex, sensitive, network);
+    if (sensitive <= network) sensitiveIndex += 1;
+    else networkIndex += 1;
+  }
+  const shellMatch = shellSensitiveUpload.exec(text);
+  const matchIndex = Math.min(firstPairIndex, shellMatch?.index ?? Number.POSITIVE_INFINITY);
+  if (!Number.isFinite(matchIndex)) return;
+  findings.push(finding('PHA-EXFIL-001', 'high', 'exfiltration', 'A pattern may send environment or file data to a network endpoint.', relative, lineAt(text, matchIndex), excerptAt(text, matchIndex), 'Do not transmit environment values or local file contents; require explicit, reviewed data selection.', 'medium'));
+}
+
 function inspectText(file, text, bytes, findings, root) {
   const relative = relativeFile(root, file);
+  const scannerModule = path.resolve(file) === SCANNER_MODULE_REAL_PATH;
   const lower = text.toLowerCase();
   const base = path.basename(file);
   const normalizedRelative = relative.replace(/[\\/]+/g, '/');
@@ -89,24 +126,28 @@ function inspectText(file, text, bytes, findings, root) {
     addPatternFindings(findings, relative, text, [
       { id: 'PHA-INSTR-001', severity: 'medium', category: 'instruction', summary: 'Always-on language can create unnecessary persistent obligations.', pattern: /\b(?:must\s+always|always\s+(?:do|use|run|check|respond|activate|apply|load|read)|(?:every|each)\s+request|never\s+(?:stop|finish|refuse)|at\s+all\s+times)\b/i, remediation: 'Scope the instruction to a specific trigger or workflow stage.', confidence: 'medium' },
       { id: 'PHA-INSTR-003', severity: 'high', category: 'amplification', summary: 'Subagent language may amplify work without an explicit bound.', pattern: /\b(?:spawn|create|delegate\s+to)\s+(?:multiple\s+)?(?:sub-?agents?|agents?)\b|\bsub-?agents?\s+(?:for\s+)?(?:each|every|all)\b/i, remediation: 'Set a maximum agent count and a clear stopping condition.', confidence: 'medium' },
-    ]);
+    ], scannerModule);
     const name = /^---\s*\n[\s\S]*?^name:\s*([^\n#]+)\s*$/m.exec(text)?.[1]?.trim().replace(/^['"]|['"]$/g, '');
     if (name) {
       const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const recursive = new RegExp(`\\b(?:invoke|run|call|use)\\s+(?:the\\s+)?(?:\\x60|\\$)?${escapedName}(?:\\x60)?(?:\\s+skill)?\\b`, 'i').exec(text.slice(text.indexOf('\n---') + 4));
+      const bodyStart = text.indexOf('\n---');
+      const bodyOffset = bodyStart === -1 ? 0 : bodyStart + 4;
+      const expression = `\\b(?:invoke|run|call|use)\\s+(?:the\\s+)?(?:\\$${escapedName}|\\x60${escapedName}\\x60(?:\\s+skill)?|${escapedName}\\s+skill|skill\\s+(?:named\\s+)?\\x60?${escapedName}\\x60?|skill\\s*[:=-]\\s*\\x60?${escapedName}\\x60?)\\b`;
+      const recursive = new RegExp(expression, 'i').exec(text.slice(bodyOffset));
       if (recursive) {
-        const offset = text.indexOf('\n---') + 4 + recursive.index;
+        const offset = bodyOffset + recursive.index;
         findings.push(finding('PHA-INSTR-002', 'medium', 'instruction', 'The skill appears to invoke itself recursively.', relative, lineAt(text, offset), excerptAt(text, offset), 'Replace self-invocation with a bounded, non-recursive workflow.', 'high'));
       }
     }
   }
 
+  const shellLike = isShellLike(file);
   addPatternFindings(findings, relative, text, [
-    { id: 'PHA-EXEC-001', severity: 'high', category: 'execution', summary: 'Shell or process execution capability is present.', pattern: /\b(?:child_process|execFileSync?|execSync?|spawnSync?|spawn\s*\(|fork\s*\(|Bun\.spawn|Deno\.Command|subprocess\.(?:run|Popen)|os\.system|(?:sh|bash|zsh|cmd|powershell)\s+-[A-Za-z]*c)\b|\|\s*(?:sh|bash)\b/, remediation: 'Avoid executing untrusted input; use allowlisted commands and argument arrays when execution is essential.', confidence: 'high' },
-    { id: 'PHA-EXEC-002', severity: 'high', category: 'execution', summary: 'Dynamic evaluation can execute constructed code.', pattern: /\b(?:eval\s*\(|new\s+Function\s*\(|vm\.(?:runIn|run)\w*\s*\()/i, remediation: 'Remove dynamic evaluation and use a constrained parser or explicit dispatch table.', confidence: 'high' },
+    { id: 'PHA-EXEC-001', severity: 'high', category: 'execution', summary: 'Shell or process execution capability is present.', pattern: shellLike ? /\b(?:child_process|exec(?:File)?(?:Sync)?\s*\(|spawn(?:Sync)?\s*\(|fork\s*\(|Bun\.spawn|Deno\.Command|subprocess\.(?:run|Popen)|os\.system|(?:sh|bash|zsh|cmd|powershell)\s+-[A-Za-z]*c)(?![\w$])|\|\s*(?:sh|bash)\b|`(?:[^`\n]+)`/i : /\b(?:child_process|exec(?:File)?(?:Sync)?\s*\(|spawn(?:Sync)?\s*\(|fork\s*\(|Bun\.spawn|Deno\.Command|subprocess\.(?:run|Popen)|os\.system|(?:sh|bash|zsh|cmd|powershell)\s+-[A-Za-z]*c)(?![\w$])|\|\s*(?:sh|bash)\b/i, remediation: 'Avoid executing untrusted input; use allowlisted commands and argument arrays when execution is essential.', confidence: 'high' },
+    { id: 'PHA-EXEC-002', severity: 'high', category: 'execution', summary: 'Dynamic evaluation can execute constructed code.', pattern: shellLike ? /\b(?:eval\s*\(|new\s+Function\s*\(|vm\.(?:runIn|run)\w*\s*\()|(?:^[\t ]*|[;&|]\s*|\b(?:if|then|do|while|until)\s+)eval(?:\s|$)/im : /\b(?:eval\s*\(|new\s+Function\s*\(|vm\.(?:runIn|run)\w*\s*\()/i, remediation: 'Remove dynamic evaluation and use a constrained parser or explicit dispatch table.', confidence: 'high' },
     { id: 'PHA-NET-001', severity: 'medium', category: 'network', summary: 'Network request capability is present.', pattern: /\b(?:fetch\s*\(|axios\.|https?\.request\s*\(|WebSocket\s*\(|curl\s+|wget\s+)/i, remediation: 'Use explicit allowlisted endpoints and avoid transmitting sensitive local data.', confidence: 'high' },
-    { id: 'PHA-EXFIL-001', severity: 'critical', category: 'exfiltration', summary: 'A pattern may send environment or file data to a network endpoint.', pattern: /(?:curl\b[^\n]*(?:\$\{|\$)(?:\w*(?:token|secret|key|env|home)|\(cat\b)|fetch\s*\([^\n]*(?:process\.env|readFile|readFileSync)|(?:process\.env|readFileSync?)\b[^\n]{0,180}(?:fetch\s*\(|https?:\/\/))/i, remediation: 'Do not transmit environment values or local file contents; require explicit, reviewed data selection.', confidence: 'medium' },
-  ]);
+  ], scannerModule);
+  addExfiltrationFinding(findings, relative, text, scannerModule);
 
   for (const pattern of SECRET_PATTERNS) {
     pattern.lastIndex = 0;
@@ -117,18 +158,35 @@ function inspectText(file, text, bytes, findings, root) {
     }
   }
 
-  if (lower.includes('ignore previous instructions') || lower.includes('system prompt')) {
+  if (!scannerModule && (lower.includes('ignore previous instructions') || lower.includes('system prompt'))) {
     const index = lower.includes('ignore previous instructions') ? lower.indexOf('ignore previous instructions') : lower.indexOf('system prompt');
     const evidence = excerptAt(text, index);
-    if (!evidence.includes('lower.includes(')) {
-      findings.push(finding('PHA-PROMPT-001', 'medium', 'instruction', 'Instruction-override language appears in a scanned file.', relative, lineAt(text, index), evidence, 'Treat external text as data and keep authority boundaries explicit.', 'medium'));
-    }
+    findings.push(finding('PHA-PROMPT-001', 'medium', 'instruction', 'Instruction-override language appears in a scanned file.', relative, lineAt(text, index), evidence, 'Treat external text as data and keep authority boundaries explicit.', 'medium'));
   }
 }
 
 function jsonLine(error, text) {
+  const line = /\bline\s+(\d+)\b/i.exec(String(error?.message))?.[1];
+  if (line) return Math.max(1, Number(line));
   const position = /position\s+(\d+)/i.exec(String(error?.message))?.[1];
   return position ? lineAt(text, Number(position)) : 1;
+}
+
+function createSkippedInventory() {
+  return {
+    symlinks: 0, symlinkPaths: [], oversized: 0, oversizedPaths: [], nonText: 0,
+    fileLimit: false, totalByteLimit: false,
+    unreadableDirectoriesCount: 0, unreadableDirectories: [],
+    unreadableStatsCount: 0, unreadableStats: [],
+    unreadableFilesCount: 0, unreadableFiles: [],
+    boundaryPathsCount: 0, boundaryPaths: [],
+    ignoredDirectoriesCount: 0, ignoredDirectories: []
+  };
+}
+
+function recordSkippedPath(skipped, countKey, pathsKey, value) {
+  skipped[countKey] += 1;
+  if (skipped[pathsKey].length < SKIPPED_PATH_LIMIT) skipped[pathsKey].push(value);
 }
 
 function inspectManifest(file, text, findings, root) {
@@ -173,14 +231,11 @@ function inspectManifest(file, text, findings, root) {
 
 async function collectFiles(root, limits) {
   const files = [];
-  const skipped = {
-    symlinks: 0, symlinkPaths: [], oversized: 0, oversizedPaths: [], nonText: 0,
-    fileLimit: false, totalByteLimit: false, unreadableDirectories: [], unreadableStats: [], unreadableFiles: [], boundaryPaths: []
-  };
+  const skipped = createSkippedInventory();
   let totalBytes = 0;
   async function walk(directory) {
     let entries;
-    try { entries = await fsp.readdir(directory, { withFileTypes: true }); } catch { skipped.unreadableDirectories.push(relativeFile(root, directory)); return; }
+    try { entries = await fsp.readdir(directory, { withFileTypes: true }); } catch { recordSkippedPath(skipped, 'unreadableDirectoriesCount', 'unreadableDirectories', relativeFile(root, directory)); return; }
     entries.sort((a, b) => a.name.localeCompare(b.name));
     for (const entry of entries) {
       if (files.length >= limits.maxFiles) { skipped.fileLimit = true; return; }
@@ -188,24 +243,24 @@ async function collectFiles(root, limits) {
       const full = path.join(directory, entry.name);
       if (!isWithin(root, full)) continue;
       if (entry.isSymbolicLink()) {
-        skipped.symlinks += 1;
-        if (skipped.symlinkPaths.length < 100) skipped.symlinkPaths.push(relativeFile(root, full));
+        recordSkippedPath(skipped, 'symlinks', 'symlinkPaths', relativeFile(root, full));
         continue;
       }
       if (entry.isDirectory()) {
-        if (!IGNORED_DIRECTORIES.has(entry.name)) await walk(full);
+        if (IGNORED_DIRECTORIES.has(entry.name)) {
+          recordSkippedPath(skipped, 'ignoredDirectoriesCount', 'ignoredDirectories', relativeFile(root, full));
+        } else await walk(full);
         continue;
       }
       if (!entry.isFile()) continue;
       if (!isCandidate(full)) { skipped.nonText += 1; continue; }
       let stat;
-      try { stat = await fsp.lstat(full); } catch { skipped.unreadableStats.push(relativeFile(root, full)); continue; }
+      try { stat = await fsp.lstat(full); } catch { recordSkippedPath(skipped, 'unreadableStatsCount', 'unreadableStats', relativeFile(root, full)); continue; }
       if (stat.isSymbolicLink()) {
-        skipped.symlinks += 1;
-        if (skipped.symlinkPaths.length < 100) skipped.symlinkPaths.push(relativeFile(root, full));
+        recordSkippedPath(skipped, 'symlinks', 'symlinkPaths', relativeFile(root, full));
         continue;
       }
-      if (stat.size > limits.maxFileBytes) { skipped.oversized += 1; skipped.oversizedPaths.push(relativeFile(root, full)); continue; }
+      if (stat.size > limits.maxFileBytes) { recordSkippedPath(skipped, 'oversized', 'oversizedPaths', relativeFile(root, full)); continue; }
       if (totalBytes + stat.size > limits.maxTotalBytes) { skipped.totalByteLimit = true; return; }
       totalBytes += stat.size;
       files.push({ path: full, bytes: stat.size });
@@ -255,28 +310,30 @@ async function secureRead(root, entry, maxBytes) {
 }
 
 export async function auditPath(targetPath, options = {}) {
-  if (typeof targetPath !== 'string' || !targetPath.trim()) throw new TypeError('targetPath must be a non-empty string.');
+  if (typeof targetPath !== 'string' || !targetPath.trim()) throw new AuditTargetError('Target path must be a non-empty string.');
   const limits = {
     maxFiles: bounded(options.maxFiles, DEFAULTS.maxFiles, LIMITS.maxFiles),
     maxFileBytes: bounded(options.maxFileBytes, DEFAULTS.maxFileBytes, LIMITS.maxFileBytes),
     maxTotalBytes: bounded(options.maxTotalBytes, DEFAULTS.maxTotalBytes, LIMITS.maxTotalBytes),
   };
   const selected = path.resolve(targetPath);
-  const selectedStat = await fsp.lstat(selected);
-  if (selectedStat.isSymbolicLink()) throw new Error('Target path must not be a symbolic link.');
-  const resolvedTarget = await fsp.realpath(selected);
+  let selectedStat;
+  let resolvedTarget;
+  try {
+    selectedStat = await fsp.lstat(selected);
+    resolvedTarget = await fsp.realpath(selected);
+  } catch {
+    throw new AuditTargetError('Target path does not exist or cannot be inspected.');
+  }
+  if (selectedStat.isSymbolicLink()) throw new AuditTargetError('Target path must not be a symbolic link.');
   const root = selectedStat.isDirectory() ? resolvedTarget : path.dirname(resolvedTarget);
   const files = [];
   let skipped;
   if (selectedStat.isFile()) {
-    if (!isCandidate(selected)) throw new Error('Target file is not a supported text, script, configuration, or manifest file.');
-    skipped = {
-      symlinks: 0, symlinkPaths: [], oversized: 0, oversizedPaths: [], nonText: 0,
-      fileLimit: false, totalByteLimit: false, unreadableDirectories: [], unreadableStats: [], unreadableFiles: [], boundaryPaths: []
-    };
+    if (!isCandidate(selected)) throw new AuditTargetError('Target file is not a supported text, script, configuration, or manifest file.');
+    skipped = createSkippedInventory();
     if (selectedStat.size > limits.maxFileBytes) {
-      skipped.oversized = 1;
-      skipped.oversizedPaths.push(relativeFile(root, selected));
+      recordSkippedPath(skipped, 'oversized', 'oversizedPaths', relativeFile(root, selected));
     } else {
       files.push({ path: selected, bytes: selectedStat.size });
     }
@@ -285,7 +342,7 @@ export async function auditPath(targetPath, options = {}) {
     files.push(...collected.files);
     skipped = collected.skipped;
   } else {
-    throw new Error('Target path must be a regular file or directory.');
+    throw new AuditTargetError('Target path must be a regular file or directory.');
   }
 
   const findings = [];
@@ -298,16 +355,15 @@ export async function auditPath(targetPath, options = {}) {
     const read = await secureRead(root, entry, Math.min(limits.maxFileBytes, remainingBytes));
     const relative = relativeFile(root, entry.path);
     if (read.status === 'oversized') {
-      skipped.oversized += 1;
-      skipped.oversizedPaths.push(relative);
+      recordSkippedPath(skipped, 'oversized', 'oversizedPaths', relative);
       continue;
     }
     if (read.status === 'boundary') {
-      skipped.boundaryPaths.push(relative);
+      recordSkippedPath(skipped, 'boundaryPathsCount', 'boundaryPaths', relative);
       continue;
     }
     if (read.status !== 'ok') {
-      skipped.unreadableFiles.push(relative);
+      recordSkippedPath(skipped, 'unreadableFilesCount', 'unreadableFiles', relative);
       continue;
     }
     const { text } = read;
@@ -322,14 +378,14 @@ export async function auditPath(targetPath, options = {}) {
     findings.push(finding('PHA-SCAN-001', 'medium', 'coverage', 'Scan stopped at a configured safety bound; coverage is incomplete.', '.', null, reason, 'Reduce the target scope or raise the bound within the scanner safety limits.', 'high'));
   }
   const coverageFindings = [
-    ['PHA-SCAN-002', skipped.oversizedPaths, 'Candidate file exceeded a per-file safety bound and was not scanned.', `Skipped ${skipped.oversizedPaths.length} oversized candidate file(s).`, 'Audit the omitted file separately or raise maxFileBytes within the scanner safety limits.'],
-    ['PHA-SCAN-003', skipped.unreadableDirectories, 'Directory could not be listed; coverage is incomplete.', `Could not list ${skipped.unreadableDirectories.length} directory path(s).`, 'Restore read access and rerun the audit.'],
-    ['PHA-SCAN-004', skipped.unreadableStats, 'File metadata could not be read; coverage is incomplete.', `Could not stat ${skipped.unreadableStats.length} candidate path(s).`, 'Restore access or audit the affected path separately.'],
-    ['PHA-SCAN-005', skipped.unreadableFiles, 'Candidate file could not be read safely; coverage is incomplete.', `Could not read ${skipped.unreadableFiles.length} candidate file(s).`, 'Restore access and rerun the audit.'],
-    ['PHA-SCAN-006', skipped.boundaryPaths, 'Candidate file failed the post-open root-boundary check; coverage is incomplete.', `Skipped ${skipped.boundaryPaths.length} path(s) outside the resolved audit root.`, 'Review the path separately and ensure it remains inside the audit root.']
+    ['PHA-SCAN-002', skipped.oversized, 'Candidate file exceeded a per-file safety bound and was not scanned.', `Skipped ${skipped.oversized} oversized candidate file(s).`, 'Audit the omitted file separately or raise maxFileBytes within the scanner safety limits.'],
+    ['PHA-SCAN-003', skipped.unreadableDirectoriesCount, 'Directory could not be listed; coverage is incomplete.', `Could not list ${skipped.unreadableDirectoriesCount} directory path(s).`, 'Restore read access and rerun the audit.'],
+    ['PHA-SCAN-004', skipped.unreadableStatsCount, 'File metadata could not be read; coverage is incomplete.', `Could not stat ${skipped.unreadableStatsCount} candidate path(s).`, 'Restore access or audit the affected path separately.'],
+    ['PHA-SCAN-005', skipped.unreadableFilesCount, 'Candidate file could not be read safely; coverage is incomplete.', `Could not read ${skipped.unreadableFilesCount} candidate file(s).`, 'Restore access and rerun the audit.'],
+    ['PHA-SCAN-006', skipped.boundaryPathsCount, 'Candidate file failed the post-open root-boundary check; coverage is incomplete.', `Skipped ${skipped.boundaryPathsCount} path(s) outside the resolved audit root.`, 'Review the path separately and ensure it remains inside the audit root.']
   ];
-  for (const [ruleId, paths, summary, evidence, remediation] of coverageFindings) {
-    if (paths.length) findings.push(finding(ruleId, 'medium', 'coverage', summary, '.', null, evidence, remediation, 'high'));
+  for (const [ruleId, count, summary, evidence, remediation] of coverageFindings) {
+    if (count) findings.push(finding(ruleId, 'medium', 'coverage', summary, '.', null, evidence, remediation, 'high'));
   }
   for (const symlinkPath of skipped.symlinkPaths) {
     findings.push(finding('PHA-FS-001', 'low', 'filesystem', 'Symbolic link was skipped to preserve the audit root boundary.', symlinkPath, 1, 'Symlink skipped; its target was not read.', 'Review the link separately and include its destination as an explicit audit target if needed.', 'high'));

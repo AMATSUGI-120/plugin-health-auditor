@@ -20,6 +20,12 @@ The scanner reads a bounded set of local text and manifest files and emits stabl
 - Stable findings and a severity-weighted score for triage; the score is not a security certification.
 - Synthetic safe and unsafe fixtures for repeatable judge testing.
 
+## Adversarial hardening
+
+The scanner treats detector-looking text as inert evidence: content that mimics a `PHA-EXEC-001` rule object cannot suppress a real execution or network match, and instruction-override literals in detector-like text still receive `PHA-PROMPT-001`. Self-recursion requires explicit self-skill syntax for every skill name; ordinary prose such as “run build” is not enough. Shell files recognize `eval` argument forms and command-substitution backticks, while Markdown backticks remain documentation.
+
+Supported risky text files under `dist/` and `build/` are scanned. Skipped categories retain exact scalar counts and at most 100 relative path samples; ignored directories use `ignoredDirectoriesCount` plus `ignoredDirectories`. Pattern rules keep the first match per file and rule to keep evidence bounded. Exfiltration is a high-severity, medium-confidence heuristic only when any local read or environment signal is paired with a nearby network call; documentation URLs and isolated reads do not trigger it. The scanner excludes only the exact resolved path of its own `src/audit.mjs` module, not every file with a similar name.
+
 ## Architecture
 
 `src/audit.mjs` is the single deterministic audit engine. `src/cli.mjs`, `src/server.mjs`, and `mcp/server.mjs` expose the same report. The bundled `skills/audit-plugin-health/SKILL.md` directs Codex to run the scanner and treat target content as untrusted data. The scanner and MCP server prepare an evidence packet; if the host Codex task is explicitly running GPT-5.6, the skill directs that host model to review it and label semantic inferences separately. A human remains responsible for accepting or rejecting those inferences.
@@ -55,7 +61,7 @@ Start the local browser demo:
 npm run demo
 ```
 
-The server listens on `http://127.0.0.1:4173` by default. It also provides `GET /health` and `POST /api/audit` with a JSON body such as `{"path":"test/fixtures/unsafe-plugin"}`.
+The server listens on `http://127.0.0.1:4173` by default and validates the `Host` header against localhost forms. It also provides `GET /health` and `POST /api/audit` with an `application/json` body such as `{"path":"test/fixtures/unsafe-plugin"}`. Non-local browser `Origin` values are rejected. This API is a trusted-local-user path selector: localhost callers choose what local path to inspect, while the audit remains read-only and treats the selected target as untrusted data.
 Malformed JSON returns `400`, request bodies over 1 MiB return `413`, and audit failures return a generic `500` response without exposing filesystem details.
 
 Start the stdio MCP server:
@@ -64,7 +70,7 @@ Start the stdio MCP server:
 npm run mcp
 ```
 
-The MCP tools are `audit_plugin_health` for a deterministic report and `prepare_semantic_review` for a compact evidence packet. The current [.mcp.json](.mcp.json) is a direct server map, the format supported by the current official Codex plugin docs; MCP prepares evidence but does not call or pin GPT-5.6.
+The MCP tools are `audit_plugin_health` for a deterministic report and `prepare_semantic_review` for a compact evidence packet. The current [.mcp.json](.mcp.json) is a direct server map, the format supported by the current official Codex plugin docs. JSONL requests are processed sequentially with a 1 MiB message limit; expected target failures return generic tool errors, and unexpected failures use JSON-RPC `-32603` without internal details. MCP prepares evidence but does not call or pin GPT-5.6.
 
 ## Tests and checks
 
@@ -73,11 +79,11 @@ npm test
 npm run check
 ```
 
-The automated suite currently reports 16 passing tests covering stable safe/unsafe findings, evidence paths and line numbers, redaction, symlink handling, CLI JSON and exit behavior, MCP initialization/tool output, and HTTP health, successful audit, malformed JSON, oversized body, missing path, and generic internal errors.
+The automated suite currently reports exactly 16 passing top-level tests covering stable safe/unsafe findings, adversarial pattern handling, bounded coverage, evidence paths and line numbers, redaction, symlink handling, CLI JSON and exit behavior, MCP initialization/tool output and ordering, and HTTP host validation, health, successful audit, malformed JSON, oversized body, missing path, and generic internal errors.
 
 ## Trust boundary
 
-The auditor treats every target file as untrusted input. Discovered symlinks are skipped. Reads use `O_NOFOLLOW` where available, plus opened-handle stat and post-open root checks; these measures narrow but cannot eliminate every mutable-filesystem race. The auditor does not execute target code, import target modules, install dependencies, enable or repair target configuration, or send target content over the network. An audit authorizes inspection only; remediation requires a separate decision.
+The auditor treats every target file as untrusted input. Discovered symlinks are skipped. Reads use `O_NOFOLLOW` where available, plus opened-handle stat and post-open root checks; these measures narrow but cannot eliminate every mutable-filesystem race. The auditor does not execute target code, import target modules, install dependencies, enable or repair target configuration, or send target content over the network. An audit authorizes inspection only; remediation requires a separate decision. The localhost API is intended for a trusted local user and is not a substitute for authentication; it rejects non-local `Host` and `Origin` values and requires JSON for audit requests.
 
 ## Token estimate disclaimer
 

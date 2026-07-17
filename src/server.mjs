@@ -24,6 +24,29 @@ function json(response, status, body) {
   response.end(JSON.stringify(body));
 }
 
+function allowedHost(hostHeader) {
+  if (typeof hostHeader !== "string") return false;
+  const host = hostHeader.toLowerCase();
+  if (/^(?:localhost|127\.0\.0\.1)(?::\d+)?$/.test(host)) return true;
+  return /^\[::1\](?::\d+)?$/.test(host) || host === "::1";
+}
+
+function allowedOrigin(originHeader) {
+  if (originHeader === undefined) return true;
+  if (typeof originHeader !== "string") return false;
+  try {
+    const origin = new URL(originHeader);
+    return (origin.protocol === "http:" || origin.protocol === "https:") && allowedHost(origin.host);
+  } catch {
+    return false;
+  }
+}
+
+function isJsonRequest(request) {
+  const contentType = request.headers["content-type"];
+  return typeof contentType === "string" && contentType.split(";", 1)[0].trim().toLowerCase() === "application/json";
+}
+
 async function readJson(request) {
   const chunks = [];
   let bytes = 0;
@@ -42,6 +65,10 @@ async function readJson(request) {
 export function createAuditServer() {
   return createServer(async (request, response) => {
     try {
+      if (!allowedHost(request.headers.host)) {
+        json(response, 403, { error: "Forbidden" });
+        return;
+      }
       if (request.method === "GET" && request.url === "/") {
         const html = await readFile(indexPath);
         response.writeHead(200, {
@@ -61,6 +88,14 @@ export function createAuditServer() {
       }
 
       if (request.method === "POST" && request.url === "/api/audit") {
+        if (!allowedOrigin(request.headers.origin)) {
+          json(response, 403, { error: "Forbidden" });
+          return;
+        }
+        if (!isJsonRequest(request)) {
+          json(response, 415, { error: "Content-Type must be application/json" });
+          return;
+        }
         const body = await readJson(request);
         if (!body || typeof body !== "object" || Array.isArray(body) || typeof body.path !== "string" || !body.path.trim()) {
           json(response, 400, { error: "A non-empty path is required" });
